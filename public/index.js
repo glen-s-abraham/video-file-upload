@@ -1,9 +1,13 @@
+const e = require("express");
+
 const uploadBtn=document.querySelector('#upload-btn');
 
 const uploadFiles = (()=>{
     const fileRequests = new WeakMap();
     const defaultOptions = {
-        url:'/',
+        path:'/',
+        fileId:null,
+        startingBytes:0,
         onAbort(){},
         onError(){},
         onProgress(){},
@@ -11,19 +15,45 @@ const uploadFiles = (()=>{
 
     }
 
-    const uploadFile = (file,options)=>{
-
+    const uploadFileChunks=(file,options)=>{
+        console.log(options)
         const req = new XMLHttpRequest();
         const formData = new FormData();
-        formData.append('file',file,file.name);
-        req.open('POST',options.url,true);
+        const chunk = file.slice(options.startingBytes);
+        
+        formData.append('chunk',chunk,file.name);
+        formData.append('fileId',options.fileId);
+        req.open('POST',options.path,true);
+        req.setRequestHeader('X-File-Id',options.fileId);
+        req.setRequestHeader('Content-Range',
+            `bytes=${options.startingBytes}-${options.startingBytes+chunk.size}/${file.size}`
+        );
         req.onload = (evt)=>options.onComplete(evt,file);
         req.onerror= (evt)=>options.onError(evt,file);
         req.ontimeout=(evt)=>options.onError(evt,file);
-        req.upload.onprogress=(evt)=>options.onProgress(evt,file);
+        req.upload.onprogress=(evt)=>{
+            const loaded = options.startingBytes+e.loaded;
+            options.onProgress({...evt,loaded,total:file.size},file)
+        };
         req.onabort=(evt)=>options.onAbort(evt,file);
-        fileRequests.set(file,{request:req,options});
+        fileRequests.get(file).request = req
         req.send(formData);
+    }
+
+    const uploadFile = (file,options)=>{
+        fetch('http://localhost:8080/upload-request',{
+            method:'POST',
+            headers:{
+                'Content-Type':'application/json'
+            },
+            body:JSON.stringify({fileName:file.name})
+        })
+        .then(res=>res.json())
+        .then(res=>{
+            options = {...options,fileId:res.fileId};
+            fileRequests.set(file,{request:null,options})
+            uploadFileChunks(file,{...options,fileId:res.fileId});
+        })
     }
 
     const abortFileUpload = file =>{
@@ -32,6 +62,21 @@ const uploadFiles = (()=>{
             fileReq.request.abort();
         }
     }
+
+    const resumeFileUpload = file => {
+		const fileReq = fileRequests.get(file);
+		
+		if (fileReq) {
+			return fetch(`http://localhost:8080/upload-status?fileName=${file.name}&fileId=${fileReq.options.fileId}`)
+				.then(res => res.json())
+				.then(res => {
+					uploadFileChunks(file, {...fileReq.options, startingBytes: Number(res.totalChunksUploaded)});
+				})
+				.catch(e => {
+					fileReq.options.onError({...e, file})
+				})
+		}
+	}
 
     const clearFileUpload = file =>{
         abortFileUpload(file);
@@ -43,7 +88,8 @@ const uploadFiles = (()=>{
 
         return {
             abortFileUpload,
-            clearFileUpload
+            clearFileUpload,
+            resumeFileUpload
         }
     }
 })();
@@ -80,6 +126,7 @@ const uploadAndTrackFiles=(()=>{
         </div>
         <div class = 'file-action'>
             <button type='button' class='pause-btn'>Pause</button>
+            <button type='button' class='resume-btn'>Resume</button>
         </div>
         `;
         files.set(file,{
@@ -89,10 +136,13 @@ const uploadAndTrackFiles=(()=>{
             percentage:0,
         })
 
-        const [,{children:[pauseBtn]}] = fileElement.children;
+        const [,{children:[pauseBtn,resumeBtn]}] = fileElement.children;
         pauseBtn.addEventListener('click',(evt)=>{
            uploader.abortFileUpload(file); 
         })
+        resumeBtn.addEventListener('click',(evt)=>{
+            uploader.resumeFileUpload(file); 
+         })
         progressBox.querySelector('.file-progress-wrapper').appendChild(fileElement);
     }
     const updateFileElement = fileObj =>{
@@ -111,6 +161,8 @@ const uploadAndTrackFiles=(()=>{
         updateFileElement(fileObj);
     }
     const onError = (evt,file)=>{
+        console.log(evt);
+        console.log(file);
         const fileObj = files.get(file);
         fileObj.status = FILE_STATUS.FAILED;
         fileObj.percentage = 100;
@@ -122,6 +174,7 @@ const uploadAndTrackFiles=(()=>{
         updateFileElement(fileObj);
     }
     const onComplete = (evt,file)=>{
+        const fileObj = files.get(file);
         fileObj.status = FILE_STATUS.COMPLETED
         updateFileElement(fileObj);
     }
@@ -129,7 +182,7 @@ const uploadAndTrackFiles=(()=>{
         [...uploadedFiles].forEach(setFileElement);
         document.body.appendChild(progressBox);
         uploader=uploadFiles(uploadedFiles,{
-            path:'http://localhost:8080/upoad',
+            path:'http://localhost:8080/upload',
             onComplete,
             onAbort,
             onError,
