@@ -1,5 +1,3 @@
-const e = require("express");
-
 const uploadBtn=document.querySelector('#upload-btn');
 
 const uploadFiles = (()=>{
@@ -32,7 +30,7 @@ const uploadFiles = (()=>{
         req.onerror= (evt)=>options.onError(evt,file);
         req.ontimeout=(evt)=>options.onError(evt,file);
         req.upload.onprogress=(evt)=>{
-            const loaded = options.startingBytes+e.loaded;
+            const loaded = options.startingBytes+evt.loaded;
             options.onProgress({...evt,loaded,total:file.size},file)
         };
         req.onabort=(evt)=>options.onAbort(evt,file);
