@@ -3,12 +3,25 @@ const path = require("path");
 const fs = require("fs");
 const { promisify } = require("util");
 const { v4: uuidv4 } = require("uuid");
+const amqplib = require('amqplib/callback_api');
 const Busboy = require("busboy");
+
+let amqpChannel;
+let VIDEO_PUB_Q = 'videopublished';
+amqplib.connect('amqp://admin:password@192.168.5.49:5672', (err, conn) => {
+    if (err) throw err;
+    if (!conn) console.log('Not connected to rabbitmq')
+    else
+        conn.createChannel((err, ch) => {
+            if (err) throw new err;
+            amqpChannel = ch;
+        })
+})
 
 const app = express();
 
 const getFilePath = (fileName, fileId) =>
-  `./uploads/file-${fileId}-${fileName.replace(/\s/g,'-')}`;
+  `E:/videos/file-${fileId}-${fileName.replace(/\s/g,'-')}`;
 
 const getFileDetails = promisify(fs.stat);
 
@@ -50,6 +63,7 @@ app.get("/upload-status", (req, res) => {
 app.post("/upload", (req, res) => {
   const contentRange = req.headers["content-range"];
   const fileId = req.headers["x-file-id"];
+  let filePath;
   if (!contentRange) {
     return res.status(400).json("Missing Content-Range header");
   }
@@ -79,11 +93,14 @@ app.post("/upload", (req, res) => {
   });
 
   busboy.on("finish", () => {
+    amqpChannel.assertQueue(VIDEO_PUB_Q);
+    amqpChannel.sendToQueue(VIDEO_PUB_Q, Buffer.from(filePath));
+    console.log('finished upload');
     res.sendStatus(200);
   });
 
   busboy.on("file", (_, file, fileDat) => {
-    const filePath = getFilePath(fileDat.filename, fileId);
+    filePath = getFilePath(fileDat.filename, fileId);
     getFileDetails(filePath)
       .then((stats) => {
         if (stats.size !== rangeStart) {
